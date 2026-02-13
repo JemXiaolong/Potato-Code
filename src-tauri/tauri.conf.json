@@ -1,0 +1,38 @@
+{
+  "productName": "POTATO Code",
+  "version": "0.1.0",
+  "identifier": "com.potato-code.app",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "POTATO Code",
+        "width": 960,
+        "height": 680,
+        "minWidth": 640,
+        "minHeight": 480,
+        "resizable": true,
+        "theme": "Dark"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb", "appimage"],
+    "icon": [
+      "icons/icon.png"
+    ],
+    "linux": {
+      "deb": {
+        "depends": [],
+        "section": "utils"
+      }
+    }
+  }
+}

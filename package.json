@@ -1,0 +1,13 @@
+{
+  "name": "potato-code",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "npx @tauri-apps/cli dev",
+    "build": "npx @tauri-apps/cli build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/cli": "^2.0.0"
+  }
+}

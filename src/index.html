@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>POTATO Code</title>
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/night-owl.css">
+</head>
+<body>
+  <!-- Toolbar -->
+  <header class="toolbar">
+    <button class="menu-btn" id="sidebar-toggle" title="Toggle historial">&#9776;</button>
+    <span class="toolbar-title">POTATO Code</span>
+    <div class="toolbar-spacer"></div>
+    <select class="model-select" id="model-select">
+      <option value="claude-sonnet-4-5-20250929">Sonnet 4.5</option>
+      <option value="claude-opus-4-6">Opus 4.6</option>
+      <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
+    </select>
+    <button class="new-chat-btn" id="new-chat-btn" title="Nuevo chat">+ Nuevo</button>
+    <button class="settings-btn" id="settings-btn" title="Configuracion">&#9881;</button>
+  </header>
+
+  <!-- Sidebar: historial de chats -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">HISTORIAL</div>
+    <div class="sidebar-list" id="chat-list">
+      <div class="sidebar-empty">Sin conversaciones</div>
+    </div>
+  </aside>
+
+  <!-- Chat area -->
+  <main class="chat-area" id="chat-area">
+    <div class="chat-messages" id="chat-messages">
+      <!-- Welcome screen -->
+      <div class="welcome" id="welcome">
+        <img class="welcome-logo" src="img/logo.png" alt="POTATO Code">
+        <h1 class="welcome-title">POTATO Code</h1>
+        <p class="welcome-sub">Interfaz grafica para Claude Code</p>
+        <div class="welcome-shortcuts">
+          <div class="welcome-row"><kbd>Enter</kbd><span>Enviar mensaje</span></div>
+          <div class="welcome-row"><kbd>Shift+Enter</kbd><span>Nueva linea</span></div>
+          <div class="welcome-row"><kbd>Ctrl+N</kbd><span>Nuevo chat</span></div>
+          <div class="welcome-row"><kbd>Ctrl+B</kbd><span>Toggle historial</span></div>
+          <div class="welcome-row"><kbd>Escape</kbd><span>Detener generacion</span></div>
+        </div>
+        <p class="welcome-credit">Developed by JemXiaoLong</p>
+      </div>
+    </div>
+  </main>
+
+  <!-- Input area -->
+  <footer class="input-area">
+    <div class="input-wrap">
+      <textarea
+        class="input-box"
+        id="input-box"
+        placeholder="Escribe tu mensaje..."
+        rows="1"
+        spellcheck="false"
+      ></textarea>
+      <button class="send-btn" id="send-btn" title="Enviar">&#10148;</button>
+      <button class="stop-btn hidden" id="stop-btn" title="Detener">&#9632;</button>
+    </div>
+    <div class="input-status">
+      <span id="status-text">Ready</span>
+      <span class="input-spacer"></span>
+      <span class="input-credit">by JemXiaoLong</span>
+    </div>
+  </footer>
+
+  <!-- Scripts -->
+  <script src="js/vendor/marked.min.js"></script>
+  <script src="js/vendor/highlight.min.js"></script>
+  <script src="js/chat.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
