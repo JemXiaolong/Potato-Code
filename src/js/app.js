@@ -10,6 +10,9 @@ const App = {
     claudeInstalled: false,
     chatExpired: false,
     workingDir: null,    // carpeta de proyecto para Claude
+    allowedTools: [],    // herramientas auto-aprobadas (no piden permiso)
+    unrestricted: true,  // modo sin restricciones (todo auto-aprobado)
+    sessionApprovedTools: [], // tools aprobados durante esta sesion (reset al hacer new chat)
   },
 
   _warningTimeout: null,    // 4 min inactividad: "Sigues ahi?"
@@ -64,10 +67,8 @@ const App = {
 
   async _checkClaude() {
     try {
-      const path = await this.invoke('check_claude');
+      const version = await this.invoke('check_claude');
       this.state.claudeInstalled = true;
-
-      const version = await this.invoke('get_claude_version');
       this._setStatus('Claude Code ' + version);
     } catch (err) {
       this.state.claudeInstalled = false;
@@ -143,6 +144,57 @@ const App = {
         this.state.claudeSessionId = chunk.session_id;
       }
 
+      // Tool activity
+      if (chunk.tool) {
+        Chat.hideThinking();
+        // Si habia texto en streaming, finalizarlo antes del tool block
+        if (streamStarted && Chat._currentStreamEl) {
+          Chat.finalizeStream();
+          streamStarted = false;
+        }
+
+        // Fase "ask" — AskUserQuestion (proceso ya matado por backend)
+        if (chunk.tool.phase === 'ask') {
+          this.state.isStreaming = false;
+          this._setStreamingUI(false);
+          this._setStatus('Claude te hace una pregunta...');
+          Chat._onUserAnswer = (answers) => {
+            Chat._onUserAnswer = null;
+            this._answerQuestion(answers);
+          };
+          Chat.showAskUser(chunk.tool);
+          return;
+        }
+
+        // Fase "approval" — tool necesita aprobacion (proceso ya matado por backend)
+        if (chunk.tool.phase === 'approval') {
+          this.state.isStreaming = false;
+          this._setStreamingUI(false);
+          this._setStatus('Claude necesita tu aprobacion...');
+          Chat._onToolApproval = (approved) => {
+            Chat._onToolApproval = null;
+            if (approved) {
+              this.state.sessionApprovedTools.push(chunk.tool.tool_name);
+              this._resumeAfterApproval(chunk.tool);
+            } else {
+              this._resumeAfterDenial(chunk.tool);
+            }
+          };
+          Chat.showToolApproval(chunk.tool);
+          return;
+        }
+
+        // Fase normal: start / result
+        if (chunk.tool.phase === 'start') {
+          this._setStatus('Usando ' + chunk.tool.tool_name + '...');
+          Chat.showToolStart(chunk.tool);
+        } else if (chunk.tool.phase === 'result') {
+          Chat.showToolResult(chunk.tool);
+          this._setStatus('Generando respuesta...');
+        }
+        return;
+      }
+
       if (chunk.done) {
         const fullResponse = Chat._streamBuffer || '';
         if (fullResponse) {
@@ -159,6 +211,11 @@ const App = {
         this._setStreamingUI(false);
         this._setStatus('Ready');
         this._saveCurrentChat();
+
+        // Token counter
+        if (chunk.usage) {
+          this._updateTokenInfo(chunk.usage.input_tokens, chunk.usage.output_tokens);
+        }
         return;
       }
 
@@ -171,12 +228,21 @@ const App = {
       Chat.appendToStream(chunk.content);
     };
 
+    // Construir allowedTools para el backend
+    // null = unrestricted (todo auto-aprobado)
+    // [...] = solo estos tools auto-aprobados, el resto pide permiso
+    const allowedTools = this.state.unrestricted
+      ? null
+      : [...new Set([...this.state.allowedTools, ...this.state.sessionApprovedTools])];
+
     try {
       await this.invoke('send_message', {
         message: text,
+        processId: this.state.currentSessionId,
         sessionId: this.state.claudeSessionId,
         model,
         workingDir: this.state.workingDir,
+        allowedTools,
         onEvent: channel,
       });
 
@@ -267,11 +333,68 @@ const App = {
     if (popup) popup.remove();
   },
 
+  async _answerQuestion(answers) {
+    // answers = {0: {question, answer}, 1: {question, answer}, ...}
+    // El proceso ya fue matado por el backend, enviar con --resume
+    const parts = Object.values(answers).map(a =>
+      `"${a.question}" -> ${a.answer}`
+    );
+    const msg = parts.length === 1
+      ? `Mi respuesta: ${parts[0]}`
+      : `Mis respuestas:\n${parts.join('\n')}`;
+
+    const input = document.getElementById('input-box');
+    input.value = msg;
+    this.sendMessage();
+  },
+
+  _resumeAfterApproval(tool) {
+    // Construir mensaje con los detalles completos del tool para que Claude lo re-ejecute
+    const inp = tool.input || {};
+    let details = '';
+
+    switch (tool.tool_name) {
+      case 'Write':
+        details = `Crea el archivo "${inp.file_path}" con exactamente el mismo contenido que ibas a escribir. Hazlo ahora.`;
+        break;
+      case 'Edit':
+        details = `Edita el archivo "${inp.file_path}". ` +
+          (inp.old_string ? `Reemplaza:\n${inp.old_string}\nPor:\n${inp.new_string}` : 'Aplica el cambio que ibas a hacer.');
+        break;
+      case 'Bash':
+        details = `Ejecuta este comando:\n${inp.command}`;
+        break;
+      case 'WebFetch':
+        details = `Fetch: ${inp.url}`;
+        break;
+      case 'WebSearch':
+        details = `Busca: ${inp.query}`;
+        break;
+      default:
+        details = `Usa ${tool.tool_name} con los parametros que tenias planeados.`;
+        if (Object.keys(inp).length > 0) {
+          details += '\nParametros: ' + JSON.stringify(inp).slice(0, 500);
+        }
+    }
+
+    const msg = `APROBADO. ${details}`;
+    const input = document.getElementById('input-box');
+    input.value = msg;
+    this.sendMessage();
+  },
+
+  _resumeAfterDenial(tool) {
+    const msg = `RECHAZADO: NO uses ${tool.tool_name}. Busca otra forma de resolver la tarea sin usar esa herramienta.`;
+    const input = document.getElementById('input-box');
+    input.value = msg;
+    this.sendMessage();
+  },
+
   async _expireChat() {
     // Matar proceso de claude si hay uno corriendo
     if (this.state.isStreaming) {
       try {
-        await this.invoke('stop_generation');
+        await this.invoke('stop_generation', { processId: this.state.currentSessionId || '' });
       } catch (_) {}
 
       Chat.hideThinking();
@@ -298,7 +421,7 @@ const App = {
 
   async stopGeneration() {
     try {
-      await this.invoke('stop_generation');
+      await this.invoke('stop_generation', { processId: this.state.currentSessionId || '' });
     } catch (err) {
       // Ignorar si no hay proceso
     }
@@ -323,6 +446,7 @@ const App = {
     this.state.claudeSessionId = null;
     this.state.messages = [];
     this.state.chatExpired = false;
+    this.state.sessionApprovedTools = [];
     Chat.clear();
     Chat.showWelcome();
     this._setStatus('Ready');
@@ -528,13 +652,23 @@ const App = {
       if (settings.workingDir) {
         this.state.workingDir = settings.workingDir;
       }
+      if (Array.isArray(settings.allowedTools)) {
+        this.state.allowedTools = settings.allowedTools;
+      }
+      if (typeof settings.unrestricted === 'boolean') {
+        this.state.unrestricted = settings.unrestricted;
+      }
     } catch (_) {}
   },
 
   async _saveSettings() {
     try {
       await this.invoke('save_settings', {
-        settings: { workingDir: this.state.workingDir },
+        settings: {
+          workingDir: this.state.workingDir,
+          allowedTools: this.state.allowedTools,
+          unrestricted: this.state.unrestricted,
+        },
       });
     } catch (_) {}
   },
@@ -544,6 +678,26 @@ const App = {
     if (document.getElementById('settings-popup')) return;
 
     const currentDir = this.state.workingDir || 'No configurado (usa directorio de la app)';
+
+    const allTools = [
+      { id: 'Read', label: 'Read', desc: 'Leer archivos' },
+      { id: 'Edit', label: 'Edit', desc: 'Editar archivos' },
+      { id: 'Write', label: 'Write', desc: 'Crear archivos' },
+      { id: 'Bash', label: 'Bash', desc: 'Ejecutar comandos' },
+      { id: 'Glob', label: 'Glob', desc: 'Buscar archivos' },
+      { id: 'Grep', label: 'Grep', desc: 'Buscar en contenido' },
+      { id: 'WebFetch', label: 'WebFetch', desc: 'Obtener contenido web' },
+      { id: 'WebSearch', label: 'WebSearch', desc: 'Buscar en la web' },
+    ];
+
+    const toolCheckboxes = allTools.map(t => {
+      const checked = this.state.allowedTools.includes(t.id) ? 'checked' : '';
+      return `<label class="tool-checkbox">
+        <input type="checkbox" value="${t.id}" ${checked} ${this.state.unrestricted ? 'disabled' : ''}>
+        <span class="tool-name">${t.label}</span>
+        <span class="tool-desc">${t.desc}</span>
+      </label>`;
+    }).join('');
 
     const overlay = document.createElement('div');
     overlay.id = 'settings-popup';
@@ -564,6 +718,19 @@ const App = {
           <div class="settings-current">Actual: ${currentDir}</div>
         </div>
 
+        <div class="settings-field">
+          <label class="settings-label">Permisos de herramientas</label>
+          <p class="settings-hint">Controla que herramientas puede usar Claude</p>
+          <label class="tool-checkbox unrestricted-toggle">
+            <input type="checkbox" id="settings-unrestricted" ${this.state.unrestricted ? 'checked' : ''}>
+            <span class="tool-name">Modo sin restricciones</span>
+            <span class="tool-desc">Todas las herramientas sin pedir permiso</span>
+          </label>
+          <div class="tools-grid" id="settings-tools-grid">
+            ${toolCheckboxes}
+          </div>
+        </div>
+
         <div class="settings-actions">
           <button class="popup-btn-secondary" id="settings-cancel">Cancelar</button>
           <button class="popup-btn" id="settings-save">Guardar</button>
@@ -572,6 +739,23 @@ const App = {
     `;
 
     document.body.appendChild(overlay);
+
+    // Toggle unrestricted: deshabilitar/habilitar checkboxes
+    const unrestrictedCheckbox = document.getElementById('settings-unrestricted');
+    const toolsGrid = document.getElementById('settings-tools-grid');
+
+    unrestrictedCheckbox.addEventListener('change', () => {
+      const disabled = unrestrictedCheckbox.checked;
+      toolsGrid.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+        cb.disabled = disabled;
+      });
+      toolsGrid.classList.toggle('tools-disabled', disabled);
+    });
+
+    // Inicializar estado visual
+    if (this.state.unrestricted) {
+      toolsGrid.classList.add('tools-disabled');
+    }
 
     document.getElementById('settings-cancel').addEventListener('click', () => {
       overlay.remove();
@@ -582,7 +766,6 @@ const App = {
       const dir = input.value.trim();
 
       if (dir) {
-        // Validar que la carpeta exista
         const valid = await this.invoke('validate_folder', { path: dir });
         if (!valid) {
           input.style.borderColor = '#ef4444';
@@ -593,6 +776,16 @@ const App = {
       } else {
         this.state.workingDir = null;
       }
+
+      // Guardar modo unrestricted
+      this.state.unrestricted = unrestrictedCheckbox.checked;
+
+      // Guardar tools seleccionadas
+      const selected = [];
+      toolsGrid.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
+        selected.push(cb.value);
+      });
+      this.state.allowedTools = selected;
 
       await this._saveSettings();
       overlay.remove();
@@ -673,6 +866,14 @@ const App = {
   },
 
   // -- Helpers -----------------------------------------------------------------
+
+  _updateTokenInfo(input, output) {
+    const el = document.getElementById('token-info');
+    if (el && input && output) {
+      const fmt = (n) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : n;
+      el.textContent = fmt(input) + ' in / ' + fmt(output) + ' out';
+    }
+  },
 
   _generateId() {
     return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
